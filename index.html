@@ -123,8 +123,8 @@
                             coordinates: [coordinates.lon, coordinates.lat]
                         },
                         properties: {
-                            // Correction : On vérifie la présence de la colonne "Périmètre" avec et sans accent pour plus de robustesse.
-                            Perimetre: row['Périmètre'] || row['Perimetre'] || null,
+                            // Correction : Accès à la 7ème colonne (index 6) pour 'Périmètre' pour éviter les problèmes d'encodage du nom de la colonne.
+                            Perimetre: row[Object.keys(row)[6]] || null,
                             adresse_source: addressString
                         }
                     });
@@ -255,5 +255,4 @@
     </script>
 </body>
 </html>
-
 
