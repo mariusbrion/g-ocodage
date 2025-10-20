@@ -12,6 +12,9 @@
         body {
             font-family: 'Inter', sans-serif;
         }
+        #status p {
+            word-break: break-all;
+        }
     </style>
 </head>
 <body class="bg-gray-50 text-gray-800 flex items-center justify-center min-h-screen">
@@ -28,6 +31,7 @@
                 <h2 class="font-semibold mb-2">Instructions :</h2>
                 <ul class="list-disc list-inside space-y-1">
                     <li>Votre fichier CSV doit contenir les colonnes exactes : <code class="bg-gray-200 px-1 rounded">N</code>, <code class="bg-gray-200 px-1 rounded">Bis</code>, <code class="bg-gray-200 px-1 rounded">Suite</code>, <code class="bg-gray-200 px-1 rounded">Rue</code>, <code class="bg-gray-200 px-1 rounded">Code postal</code>, <code class="bg-gray-200 px-1 rounded">Commune</code>, <code class="bg-gray-200 px-1 rounded">Périmètre</code>.</li>
+                    <li>Le séparateur peut être une virgule (,) ou un point-virgule (;).</li>
                     <li>Le géocodage utilise Nominatim (OpenStreetMap) puis la Base Adresse Nationale (France) en cas d'échec.</li>
                     <li>Un délai d'une seconde est respecté entre chaque appel pour ne pas surcharger les serveurs.</li>
                 </ul>
@@ -93,7 +97,7 @@
             const rows = parseCSV(text);
 
             if (rows.length === 0) {
-                statusDiv.innerHTML = `<p class="text-red-500 font-semibold">Le fichier CSV est vide ou mal formaté.</p>`;
+                statusDiv.innerHTML = `<p class="text-red-500 font-semibold">Le fichier CSV est vide ou mal formaté. Aucune ligne de données n'a pu être lue.</p>`;
                 processBtn.disabled = false;
                 return;
             }
@@ -107,7 +111,7 @@
                     .filter(part => part && part.trim() !== '')
                     .join(' ');
 
-                statusDiv.innerHTML = `<p class="text-blue-600">Traitement de l'adresse ${i + 1}/${rows.length} : ${addressString}</p>`;
+                statusDiv.innerHTML = `<p class="text-blue-600">Traitement ${i + 1}/${rows.length}: ${addressString || "Ligne vide..."}</p>`;
                 
                 const coordinates = await geocodeAddress(addressString);
 
@@ -127,8 +131,7 @@
                     failedAddresses.push({ line: i + 2, address: addressString }); // +2 pour la ligne d'en-tête et l'index 0
                 }
                 
-                // Pause pour respecter les limites de l'API Nominatim (1 req/s)
-                await new Promise(resolve => setTimeout(resolve, 1000));
+                await new Promise(resolve => setTimeout(resolve, 1000)); // Pause pour l'API
             }
 
             // Finalisation
@@ -150,12 +153,11 @@
             processBtn.disabled = false;
         });
 
-        /**
-         * Tente de géocoder une adresse en utilisant d'abord Nominatim, puis l'API BAN en cas d'échec.
-         * @param {string} address L'adresse à géocoder.
-         * @returns {Promise<{lat: number, lon: number}|null>} Un objet avec lat/lon ou null si échec.
-         */
         async function geocodeAddress(address) {
+            if (!address || address.trim() === '') {
+                console.warn("Tentative de géocodage d'une adresse vide.");
+                return null;
+            }
             // 1. Essai avec Nominatim
             try {
                 const nominatimUrl = `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(address)}&countrycodes=fr`;
@@ -177,18 +179,19 @@
                 if (data && data.features && data.features.length > 0) {
                     console.log(`BAN a trouvé: ${address}`);
                     const coords = data.features[0].geometry.coordinates;
-                    return { lat: coords[1], lon: coords[0] }; // Attention: l'API BAN renvoie [lon, lat]
+                    return { lat: coords[1], lon: coords[0] };
                 }
             } catch (error) {
                 console.warn("Erreur avec l'API BAN :", error);
             }
 
             console.error(`Échec du géocodage pour: ${address}`);
-            return null; // Si les deux échouent
+            return null;
         }
-
+        
         /**
          * Analyse une chaîne de caractères CSV et la transforme en un tableau d'objets.
+         * Gère les délimiteurs virgule et point-virgule, ainsi que les champs entre guillemets.
          * @param {string} csvText Le contenu brut du fichier CSV.
          * @returns {Array<Object>} Un tableau d'objets représentant les lignes.
          */
@@ -196,27 +199,46 @@
             const lines = csvText.trim().split(/\r\n|\n/);
             if (lines.length < 2) return [];
 
-            const headers = lines[0].split(',').map(h => h.trim());
+            // Détecte le délimiteur à partir de la première ligne (en-tête)
+            const delimiter = lines[0].includes(';') ? ';' : ',';
+            const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^"|"$/g, ''));
             const rows = [];
 
             for (let i = 1; i < lines.length; i++) {
-                const values = lines[i].split(',');
-                // Gère le cas où une ligne est vide
-                if (values.every(v => v.trim() === '')) continue;
+                const line = lines[i];
+                if (!line.trim()) continue; // Ignore les lignes vides
+
+                // Sépare la ligne en valeurs, en gérant les guillemets
+                const values = [];
+                let currentVal = '';
+                let inQuotes = false;
+                for (const char of line) {
+                    if (char === '"' && (currentVal.length === 0 || currentVal[currentVal.length - 1] !== '\\')) {
+                        inQuotes = !inQuotes;
+                    } else if (char === delimiter && !inQuotes) {
+                        values.push(currentVal.replace(/^"|"$/g, '').trim());
+                        currentVal = '';
+                    } else {
+                        currentVal += char;
+                    }
+                }
+                values.push(currentVal.replace(/^"|"$/g, '').trim());
                 
+                if (values.length < headers.length) {
+                    console.warn(`Ligne ${i + 1} ignorée (nombre de colonnes incorrect): ${line}`);
+                    continue;
+                }
+
                 const rowObject = {};
                 for (let j = 0; j < headers.length; j++) {
-                    rowObject[headers[j]] = (values[j] || '').trim();
+                    rowObject[headers[j]] = values[j] || '';
                 }
                 rows.push(rowObject);
             }
             return rows;
         }
 
-        /**
-         * Crée le fichier GeoJSON et le lien de téléchargement.
-         * @param {Array<Object>} features Le tableau des "features" GeoJSON.
-         */
+
         function createDownloadLink(features) {
             const geojson = {
                 type: 'FeatureCollection',
@@ -232,3 +254,4 @@
     </script>
 </body>
 </html>
+
